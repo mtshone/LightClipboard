@@ -1,0 +1,28 @@
+# ---- .NET 构建产物 ----
+bin/
+obj/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# ---- 本程序的运行期数据（绝不入库）----
+# 正常运行时这些都在 %LocalAppData%\LightClipboard 下，不在仓库里；
+# 但用 LIGHTCLIPBOARD_HOME 把数据目录重定向到仓库内时（例如做隔离演示/自测），
+# 这几个名字要挡住，免得把剪切板历史、截图、日志提交上去。
+clipboard.db
+clipboard.db-*
+Logs/
+Images/
+Exports/
+selftest.txt
+settings.json
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

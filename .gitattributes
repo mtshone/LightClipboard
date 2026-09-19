@@ -1,0 +1,16 @@
+# 仓库内文本文件一律用 LF 存储（源码、文档、脚本都已经是 LF），
+# 避免 Windows 上 checkout 时被 autocrlf 换成 CRLF、造成整文件 diff 噪音。
+* text=auto eol=lf
+
+# 明确按二进制处理，别做任何换行转换
+*.ico  binary
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.dll  binary
+*.exe  binary
+
+# 需求方提供的原始文档要求"原文存档、未作删改"（见 09 篇开头），
+# 它们本来就是 CRLF 换行，必须逐字节保持原样：-text 关掉换行归一化与 diff 转换。
+resources/00-原始设计文档.txt              -text
+resources/09-Win+V拦截需求与方案.txt        -text

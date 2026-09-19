@@ -1,0 +1,350 @@
+================================================================================
+ 需求来源存档：Win+V 低级键盘钩子方案（v1.1.0 的实现依据）
+ 来源：需求方提供的 WinV_KeyboardHook_Development_Plan.txt，以下内容原样存档，未作删改。
+ 实现结果与偏差说明见 ..\CHANGELOG.md 的 v1.1.0 一节、06-Win32与系统集成.md §4.1。
+
+ 实现备注（存档时补记，便于对照方案阅读代码）：
+   1. 方案要点全部落地：WH_KEYBOARD_LL 全局钩子 + 哑键 VK_NONAME(0xFC) + 异步派发 + return 1 截断；
+      钩子回调的"不阻塞 / 委托强引用 / 异常不外泄"三条约束已在代码注释中固化。
+   2. 设置项名为 EnableWinVHook（默认 true），设置页开关标题为「Win+V 拦截」，托盘菜单同名。
+   3. 与方案的差异：方案 §5.3 把 Ctrl+Shift+V 视作关闭接管后的退路；实现改为**两条路径并存**
+      （全局热键始终可用），如需"开启接管即停用热键"，改 AppHost.ApplyWinVHook 即可。
+   4. 方案未覆盖、开发中真机暴露并已修的两处：Win+V 唤起时面板抢不到前台焦点（前台锁定 +
+      AttachThreadInput 对自己窗口无效）、抢焦点过程中的 WM_ACTIVATE(INACTIVE) 触发"失焦即隐藏"
+      把刚弹出的面板收掉 —— 见 04-实现细节与坑点.md 坑点 17。
+   5. 验证边界：注入输入（keybd_event/SendInput）不会触发 Shell 的原生剪切板历史，因此
+      "原生面板是否被压住"只能真机手按核对；2026-09-19 真机确认通过。
+================================================================================
+================================================================================
+          C# + WPF 剪切板工具：Win+V 低级键盘钩子 (WH_KEYBOARD_LL) 开发方案
+================================================================================
+
+
+一、 功能概述与设计目标
+--------------------------------------------------------------------------------
+1. 目标：
+   彻底无缝接管 Windows 原生 Win+V 剪切板快捷键，在用户快速按下 Win+V 时：
+   - 100% 拦截系统原生剪切板弹窗；
+   - 100% 阻止系统开始菜单（Start Menu）误弹出；
+   - 实现微秒/毫秒级无感响应，异步唤起 WPF 自定义剪切板面板；
+   - 零注册表入侵、零重启 Explorer、开箱即用。
+
+
+2. 核心原理：
+   - 使用 Win32 低级键盘钩子 (WH_KEYBOARD_LL) 挂载全局监听；
+   - 当检测到 Win 键处于按下状态且 V 键按下时，立即向系统注入“哑键”（Dummy Key, VK_NONAME 0xFC）；
+   - 哑键能够重置 Windows Shell 对 Win 键的状态机判定（使其认为 Win 键被组合使用，从而在抬起 Win 键时不弹出开始菜单）；
+   - 异步派发 UI 唤起命令，并立即返回 (IntPtr)1 截断 V 键消息流。
+
+
+
+
+--------------------------------------------------------------------------------
+二、 Win32 API 声明与数据结构 (Interop/NativeMethods.cs)
+--------------------------------------------------------------------------------
+在 NativeMethods.cs 中补充 low-level 键盘钩子和 SendInput 相关的 Win32 声明：
+
+
+```csharp
+using System;
+using System.Runtime.InteropServices;
+
+
+public static partial class NativeMethods
+{
+    public const int WH_KEYBOARD_LL = 13;
+    public const int WM_KEYDOWN = 0x0100;
+    public const int WM_KEYUP = 0x0101;
+    public const int WM_SYSKEYDOWN = 0x0104;
+    public const int WM_SYSKEYUP = 0x0105;
+
+
+    public const int VK_LWIN = 0x5B;
+    public const int VK_RWIN = 0x5C;
+    public const int VK_V = 0x56;
+    public const byte VK_NONAME = 0xFC; // 哑键：无特定功能的虚拟按键
+
+
+    public const uint INPUT_KEYBOARD = 1;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+
+
+    public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr GetModuleHandle(string lpModuleName);
+
+
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT
+    {
+        public uint type;
+        public InputUnion u;
+    }
+
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct InputUnion
+    {
+        [FieldOffset(0)] public KEYBDINPUT ki;
+    }
+
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+}
+```
+
+
+
+
+--------------------------------------------------------------------------------
+三、 键盘钩子服务核心实现 (Services/KeyboardHookService.cs)
+--------------------------------------------------------------------------------
+实现支持启动、关闭、防 GC 回收与超时保护的键盘钩子服务类：
+
+
+```csharp
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Windows;
+
+
+public sealed class KeyboardHookService : IDisposable
+{
+    private IntPtr _hookId = IntPtr.Zero;
+    private NativeMethods.HookProc _hookProc; // 必须保持强引用，防 GC 回收导致 CallbackOnCollectedDelegate 崩溃
+
+
+    public event Action OnWinVPressed;
+    public bool IsRunning => _hookId != IntPtr.Zero;
+
+
+    public KeyboardHookService()
+    {
+        // 实例化委托对象并保存在成员变量中
+        _hookProc = HookCallback;
+    }
+
+
+    public void Start()
+    {
+        if (IsRunning) return;
+
+
+        using (Process curProcess = Process.GetCurrentProcess())
+        using (ProcessModule curModule = curProcess.MainModule)
+        {
+            _hookId = NativeMethods.SetWindowsHookEx(
+                NativeMethods.WH_KEYBOARD_LL,
+                _hookProc,
+                NativeMethods.GetModuleHandle(curModule.ModuleName),
+                0);
+        }
+
+
+        if (_hookId == IntPtr.Zero)
+        {
+            int errorCode = Marshal.GetLastWin32Error();
+            Log.Error($"[KeyboardHookService] 安装低级键盘钩子失败，错误码: {errorCode}");
+        }
+        else
+        {
+            Log.Info("[KeyboardHookService] 成功安装低级键盘钩子(WH_KEYBOARD_LL)，正在监听 Win+V");
+        }
+    }
+
+
+    public void Stop()
+    {
+        if (_hookId != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWindowsHookEx(_hookId);
+            _hookId = IntPtr.Zero;
+            Log.Info("[KeyboardHookService] 已卸载低级键盘钩子");
+        }
+    }
+
+
+    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            int msg = wParam.ToInt32();
+            if (msg == NativeMethods.WM_KEYDOWN || msg == NativeMethods.WM_SYSKEYDOWN)
+            {
+                var hookStruct = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
+                
+                // 1. 判定按下的是否是 V 键
+                if (hookStruct.vkCode == NativeMethods.VK_V)
+                {
+                    // 2. 判断当前是否有 Win 键（左 Win 或 右 Win）按住
+                    bool isLWinDown = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_LWIN) & 0x8000) != 0;
+                    bool isRWinDown = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_RWIN) & 0x8000) != 0;
+
+
+                    if (isLWinDown || isRWinDown)
+                    {
+                        // 3. 注入哑键 VK_NONAME，重置系统 Win 键状态机，彻底消除开始菜单弹窗
+                        SendDummyKey();
+
+
+                        // 4. 异步切换到 UI 线程触发唤起逻辑（切勿在 Hook 回调中阻塞做耗时操作）
+                        Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+                        {
+                            OnWinVPressed?.Invoke();
+                        }));
+
+
+                        // 5. 返回 (IntPtr)1 截断按键，阻止 V 键传给系统/原生剪切板
+                        return (IntPtr)1;
+                    }
+                }
+            }
+        }
+
+
+        return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
+    }
+
+
+    /// <summary>
+    /// 注入无害虚拟哑键 VK_NONAME (0xFC)，打破系统对单按 Win 键的判定
+    /// </summary>
+    private void SendDummyKey()
+    {
+        var inputs = new NativeMethods.INPUT[2];
+
+
+        // Key Down
+        inputs[0].type = NativeMethods.INPUT_KEYBOARD;
+        inputs[0].u.ki.wVk = NativeMethods.VK_NONAME;
+        inputs[0].u.ki.dwFlags = 0;
+
+
+        // Key Up
+        inputs[1].type = NativeMethods.INPUT_KEYBOARD;
+        inputs[1].u.ki.wVk = NativeMethods.VK_NONAME;
+        inputs[1].u.ki.dwFlags = NativeMethods.KEYEVENTF_KEYUP;
+
+
+        NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(NativeMethods.INPUT)));
+    }
+
+
+    public void Dispose()
+    {
+        Stop();
+    }
+}
+```
+
+
+
+
+--------------------------------------------------------------------------------
+四、 关键坑点、防崩溃与性能优化指南 (Edge Cases & Safety)
+--------------------------------------------------------------------------------
+
+
+1. 防止 CallbackOnCollectedDelegate 致命崩溃
+   - 原因：.NET 垃圾回收器 (GC) 无法感知 Native Win32 API 内部对 C# 委托的引用。如果直接传递匿名委托，GC 回收后再次触发按键就会直接 crash。
+   - 解决：必须像上述代码一样，把 `_hookProc = HookCallback` 赋值给类内部的私有强引用字段。
+
+
+2. 绝对禁止在 Hook 回调函数中同步阻塞
+   - 原因：Windows 操作系统对 WH_KEYBOARD_LL 设定了严苛的超时时间 (LowLevelHooksTimeout，默认 300ms)。一旦回调函数超时未 return，系统会强制注销该 Hook。
+   - 解决：回调中只做快速判定和哑键发送，UI 唤起逻辑一律使用 `Dispatcher.BeginInvoke` 异步异步派发。
+
+
+3. UAC / 管理员权限窗口交互注意事项 (UIPI)
+   - 原因：若目标当前焦点窗口属于“以管理员权限运行”的程序，普通权限进程注入的哑键或挂钩事件可能会受限。
+   - 解决：程序主 manifest 应维持 `asInvoker`，若用户需要频繁在管理员终端中使用，需提示用户选择“以管理员身份运行本剪切板程序”。
+
+
+4. 线程安全与生命周期管理
+   - 挂载 Hook 的生命周期应当与进程或设置开关绑定。在应用退出事件 `App.OnExit` 或 `AppHost.Dispose()` 时，务必显式调用 `Stop()` 或 `Dispose()` 解绑钩子。
+
+
+
+
+--------------------------------------------------------------------------------
+五、 集成与设置页联动 (Integration)
+--------------------------------------------------------------------------------
+
+
+1. 在 SettingsService & AppSettings 中增加配置项：
+   ```csharp
+   public class AppSettings
+   {
+       public bool EnableWinVHook { get; set; } = true; // 默认开启 Win+V 接管
+       // ... 其他配置项
+   }
+   ```
+
+
+2. AppHost 组合根组装：
+   ```csharp
+   // 在 AppHost 初始化时绑定事件
+   _keyboardHookService = new KeyboardHookService();
+   _keyboardHookService.OnWinVPressed += () =>
+   {
+       _mainViewModel.ToggleShowHideCommand.Execute(null);
+   };
+
+
+   if (_settingsService.Current.EnableWinVHook)
+   {
+       _keyboardHookService.Start();
+   }
+   ```
+
+
+3. 设置页双向绑定：
+   当用户在设置界面开启/关闭“使用 Win+V 接管原生剪切板”开关时：
+   - 开启：调用 `_keyboardHookService.Start()`；
+   - 关闭：调用 `_keyboardHookService.Stop()`，此时恢复退回到常规的 `Ctrl+Shift+V` 热键机制。
+
+
+================================================================================

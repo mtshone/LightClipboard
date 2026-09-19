@@ -1,0 +1,543 @@
+<ui:FluentWindow x:Class="LightClipboard.Views.MainWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 xmlns:vm="clr-namespace:LightClipboard.ViewModels"
+                 xmlns:data="clr-namespace:LightClipboard.Data"
+                 Title="LightClipboard"
+                 Width="470"
+                 Height="700"
+                 MinWidth="380"
+                 MinHeight="420"
+                 WindowStartupLocation="Manual"
+                 WindowBackdropType="Mica"
+                 WindowCornerPreference="Round"
+                 ExtendsContentIntoTitleBar="True"
+                 ShowInTaskbar="False"
+                 Topmost="True"
+                 ResizeMode="CanResize"
+                 AllowDrop="True"
+                 UseLayoutRounding="True"
+                 SnapsToDevicePixels="True"
+                 FontFamily="{StaticResource UiFont}"
+                 Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                 Background="{DynamicResource ApplicationBackgroundBrush}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ============ 标题栏 ============ -->
+        <ui:TitleBar Grid.Row="0"
+                     Title="LightClipboard"
+                     ShowMinimize="False"
+                     ShowMaximize="False"
+                     ShowClose="True"
+                     ForceShutdown="False">
+            <ui:TitleBar.Icon>
+                <ui:SymbolIcon Symbol="Clipboard24" Filled="True" />
+            </ui:TitleBar.Icon>
+            <ui:TitleBar.TrailingContent>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="PauseButton"
+                            Style="{StaticResource CardActionButtonStyle}"
+                            Click="OnPauseClick"
+                            ToolTip="暂停 / 恢复监听剪切板">
+                        <TextBlock FontFamily="{StaticResource IconFont}" FontSize="14" Text="{Binding PauseGlyph}" />
+                    </Button>
+                </StackPanel>
+            </ui:TitleBar.TrailingContent>
+        </ui:TitleBar>
+
+        <!-- ============ 搜索 + 分页/筛选 ============ -->
+        <StackPanel Grid.Row="1" Margin="14,2,14,8">
+            <ui:TextBox x:Name="SearchBox"
+                        Height="34"
+                        FontSize="13"
+                        PlaceholderText="搜索历史记录 / Emoji…"
+                        Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}">
+                <ui:TextBox.Icon>
+                    <ui:SymbolIcon Symbol="Search24" />
+                </ui:TextBox.Icon>
+            </ui:TextBox>
+
+            <!-- 顶部胶囊：一条主链，顺序固定为
+                 全部 → 文本 → 图片 → 文件 → Emoji → ★ → 设置
+                 前四项是历史筛选，后三项是页面切换；同一 GroupName 保证任何时候只有一个是选中态。
+                 只用 IsChecked 双向绑定驱动（**不要挂 Command**：RadioButton 的点击只改本地 IsChecked，
+                 不像 Button 那样触发 Command，见 04-实现细节与坑点.md 坑点 9）。
+                 页面/筛选的落地统一走 Checked 事件（OnMainChipChecked）：
+                 因为「当前是 All 时再点全部」不会产生属性变化，光靠 OnFilterChanged 会漏掉这次点击，
+                 表现为“在设置页点全部没反应”。
+                 用 WrapPanel 兜底：窗口被拖到很窄时自动换行，不会互相重叠。 -->
+            <WrapPanel Margin="0,9,0,0" Orientation="Horizontal">
+                <RadioButton x:Name="ChipAll"
+                             Content="全部"
+                             Tag="history-all"
+                             GroupName="MainChip"
+                             Style="{StaticResource ChipStyle}"
+                             Checked="OnMainChipChecked"
+                             IsChecked="{Binding Filter, Mode=TwoWay, Converter={StaticResource EnumToBool}, ConverterParameter=All}" />
+                <RadioButton x:Name="ChipText"
+                             Content="文本"
+                             Tag="history-text"
+                             GroupName="MainChip"
+                             Style="{StaticResource ChipStyle}"
+                             Checked="OnMainChipChecked"
+                             IsChecked="{Binding Filter, Mode=TwoWay, Converter={StaticResource EnumToBool}, ConverterParameter=Text}" />
+                <RadioButton x:Name="ChipImage"
+                             Content="图片"
+                             Tag="history-image"
+                             GroupName="MainChip"
+                             Style="{StaticResource ChipStyle}"
+                             Checked="OnMainChipChecked"
+                             IsChecked="{Binding Filter, Mode=TwoWay, Converter={StaticResource EnumToBool}, ConverterParameter=Image}" />
+                <RadioButton x:Name="ChipFiles"
+                             Content="文件"
+                             Tag="history-files"
+                             GroupName="MainChip"
+                             Style="{StaticResource ChipStyle}"
+                             Checked="OnMainChipChecked"
+                             IsChecked="{Binding Filter, Mode=TwoWay, Converter={StaticResource EnumToBool}, ConverterParameter=Files}" />
+                <RadioButton x:Name="ChipEmoji"
+                             Content="😀 Emoji"
+                             Tag="emoji"
+                             GroupName="MainChip"
+                             FontFamily="{StaticResource EmojiFont}"
+                             Style="{StaticResource ChipStyle}"
+                             Checked="OnMainChipChecked"
+                             IsChecked="{Binding Page, Mode=TwoWay, Converter={StaticResource EnumToBool}, ConverterParameter=Emoji}" />
+                <RadioButton x:Name="ChipPinned"
+                             Content="⭐"
+                             Tag="history-pinned"
+                             GroupName="MainChip"
+                             Margin="0"
+                             Style="{StaticResource ChipStyle}"
+                             ToolTip="只看收藏"
+                             Checked="OnMainChipChecked"
+                             IsChecked="{Binding Filter, Mode=TwoWay, Converter={StaticResource EnumToBool}, ConverterParameter=Pinned}" />
+                <RadioButton x:Name="ChipSettings"
+                             Content="设置"
+                             Tag="settings"
+                             GroupName="MainChip"
+                             Style="{StaticResource ChipStyle}"
+                             Checked="OnMainChipChecked"
+                             IsChecked="{Binding Page, Mode=TwoWay, Converter={StaticResource EnumToBool}, ConverterParameter=Settings}" />
+            </WrapPanel>
+        </StackPanel>
+
+        <!-- ============ 内容区 ============ -->
+        <Grid Grid.Row="2" Margin="14,0,14,0">
+
+            <!-- ===== 历史列表 ===== -->
+            <Grid Visibility="{Binding IsHistoryPage, Converter={StaticResource BoolToVis}}">
+                <ListBox x:Name="HistoryList"
+                         ItemsSource="{Binding Items}"
+                         SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
+                         ItemContainerStyle="{StaticResource ClipboardCardStyle}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         Padding="0"
+                         HorizontalContentAlignment="Stretch"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         VirtualizingPanel.ScrollUnit="Pixel"
+                         PreviewMouseLeftButtonDown="OnListPreviewMouseLeftButtonDown"
+                         PreviewMouseMove="OnListPreviewMouseMove"
+                         PreviewMouseLeftButtonUp="OnListPreviewMouseLeftButtonUp">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:ClipboardItemViewModel}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 缩略图 -->
+                                <Border Grid.Column="0"
+                                        Width="54"
+                                        Height="54"
+                                        Margin="0,0,10,0"
+                                        VerticalAlignment="Top"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                        BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Visibility="{Binding HasPreviewImage, Converter={StaticResource BoolToVis}}">
+                                    <Border.Clip>
+                                        <RectangleGeometry Rect="0,0,54,54" RadiusX="6" RadiusY="6" />
+                                    </Border.Clip>
+                                    <Image Source="{Binding PreviewImagePath, Converter={StaticResource Thumb}}"
+                                           Stretch="UniformToFill"
+                                           RenderOptions.BitmapScalingMode="HighQuality" />
+                                </Border>
+
+                                <!-- 类型图标 -->
+                                <Border Grid.Column="0"
+                                        Width="54"
+                                        Height="54"
+                                        Margin="0,0,10,0"
+                                        VerticalAlignment="Top"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                        CornerRadius="6"
+                                        Visibility="{Binding HasPreviewImage, Converter={StaticResource InvBoolToVis}}">
+                                    <TextBlock HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               FontFamily="{StaticResource IconFont}"
+                                               FontSize="20"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Text="{Binding TypeGlyph}" />
+                                </Border>
+
+                                <!-- 文本内容 -->
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock MaxHeight="60"
+                                               FontSize="13"
+                                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                               LineHeight="19"
+                                               Text="{Binding Title}"
+                                               TextTrimming="CharacterEllipsis"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Margin="0,5,0,0"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               Text="{Binding Subtitle}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+
+                                <!-- 操作按钮 -->
+                                <StackPanel Grid.Column="2"
+                                            Margin="6,0,0,0"
+                                            VerticalAlignment="Center"
+                                            Orientation="Horizontal">
+                                    <Button Style="{StaticResource HoverRevealButtonStyle}"
+                                            ToolTip="{Binding PinTooltip}"
+                                            Command="{Binding DataContext.TogglePinCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                            CommandParameter="{Binding}">
+                                        <TextBlock FontFamily="{StaticResource IconFont}" FontSize="13" Text="{Binding PinGlyph}" />
+                                    </Button>
+                                    <Button Style="{StaticResource HoverRevealButtonStyle}"
+                                            ToolTip="复制到剪切板（不自动粘贴）"
+                                            Command="{Binding DataContext.CopyCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                            CommandParameter="{Binding}">
+                                        <TextBlock FontFamily="{StaticResource IconFont}" FontSize="13" Text="&#xE8C8;" />
+                                    </Button>
+                                    <Button Style="{StaticResource HoverRevealButtonStyle}"
+                                            ToolTip="删除这条记录"
+                                            Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                            CommandParameter="{Binding}">
+                                        <TextBlock FontFamily="{StaticResource IconFont}" FontSize="13" Text="&#xE74D;" />
+                                    </Button>
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                    <ListBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="粘贴到当前窗口" InputGestureText="Enter"
+                                      Command="{Binding PasteCommand}" CommandParameter="{Binding SelectedItem}" />
+                            <MenuItem Header="复制到剪切板"
+                                      Command="{Binding CopyCommand}" CommandParameter="{Binding SelectedItem}" />
+                            <MenuItem Header="收藏 / 取消收藏"
+                                      Command="{Binding TogglePinCommand}" CommandParameter="{Binding SelectedItem}" />
+                            <Separator />
+                            <MenuItem Header="另存为…"
+                                      Command="{Binding SaveAsCommand}" CommandParameter="{Binding SelectedItem}" />
+                            <MenuItem Header="打开所在文件夹"
+                                      Command="{Binding OpenInFolderCommand}" CommandParameter="{Binding SelectedItem}" />
+                            <Separator />
+                            <MenuItem Header="删除这条记录" InputGestureText="Delete"
+                                      Command="{Binding DeleteCommand}" CommandParameter="{Binding SelectedItem}" />
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
+                </ListBox>
+
+                <!-- 空状态 -->
+                <StackPanel HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            MaxWidth="300"
+                            Visibility="{Binding HasItems, Converter={StaticResource InvBoolToVis}}">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontFamily="{StaticResource IconFont}"
+                               FontSize="34"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               Text="&#xE81C;" />
+                    <TextBlock Margin="0,10,0,0"
+                               HorizontalAlignment="Center"
+                               FontSize="12.5"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               Text="{Binding EmptyHint}"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ===== Emoji 面板 ===== -->
+            <Grid Visibility="{Binding IsEmojiPage, Converter={StaticResource BoolToVis}}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- 分类胶囊：WrapPanel 自动换行，8 个分类一屏可见。
+                     原来用横向滚动条，滚动条会横穿胶囊造成遮挡。 -->
+                <ListBox Grid.Row="0"
+                         Margin="0,0,0,6"
+                         ItemsSource="{Binding Emoji.Categories}"
+                         SelectedItem="{Binding Emoji.SelectedCategory, Mode=TwoWay}"
+                         ItemContainerStyle="{StaticResource CategoryChipStyle}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         Padding="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                    <ListBox.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate DataType="{x:Type data:EmojiCategory}">
+                            <TextBlock FontSize="12">
+                                <Run FontFamily="{StaticResource EmojiFont}" Text="{Binding Icon, Mode=OneWay}" />
+                                <Run Text="{Binding Name, Mode=OneWay}" />
+                            </TextBlock>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <!-- 右侧预留滚动条宽度，滚动条不会压住最后一列 Emoji -->
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl Margin="0,0,14,0" ItemsSource="{Binding Emoji.Emojis}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type data:EmojiEntry}">
+                                <Button Style="{StaticResource EmojiButtonStyle}"
+                                        Click="OnEmojiClick"
+                                        ToolTip="{Binding Name}">
+                                    <TextBlock FontFamily="{StaticResource EmojiFont}"
+                                               FontSize="22"
+                                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                               Text="{Binding Value}" />
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+
+            <!-- ===== 设置面板 ===== -->
+            <ScrollViewer Visibility="{Binding IsSettingsPage, Converter={StaticResource BoolToVis}}"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="0,0,0,10">
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="点击卡片后自动粘贴" />
+                                <TextBlock Style="{StaticResource SettingHintStyle}" Text="复制到剪切板后自动切回原窗口并模拟 Ctrl+V" />
+                            </StackPanel>
+                            <ui:ToggleSwitch HorizontalAlignment="Right"
+                                             VerticalAlignment="Center"
+                                             IsChecked="{Binding AutoPaste, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="失去焦点时自动隐藏" />
+                                <TextBlock Style="{StaticResource SettingHintStyle}" Text="像系统面板一样，点击别处即收起" />
+                            </StackPanel>
+                            <ui:ToggleSwitch HorizontalAlignment="Right"
+                                             VerticalAlignment="Center"
+                                             IsChecked="{Binding HideOnDeactivate, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+
+                    <!-- 隐藏延迟：直接控制“失焦→隐藏”的缓冲时长（拖拽文件进来时靠它让路） -->
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <StackPanel>
+                            <Grid>
+                                <!-- 单位写进标题（“毫秒”），右侧只留一个可编辑数值框：
+                                     数值不再重复显示两遍（输入框本身会随滑块实时更新） -->
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="隐藏延迟（毫秒）" />
+                                <TextBox Style="{StaticResource SettingValueBoxStyle}"
+                                         HorizontalAlignment="Right"
+                                         ToolTip="手动输入 50~1000 之间的整数，单位毫秒"
+                                         Text="{Binding DeferredHideDelayInput, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                            </Grid>
+                            <Slider Margin="0,6,0,0"
+                                    IsSnapToTickEnabled="True"
+                                    Maximum="1000"
+                                    Minimum="50"
+                                    TickFrequency="50"
+                                    Value="{Binding DeferredHideDelayMs, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource SettingHintStyle}"
+                                       Text="失焦后等待这么久再隐藏：期间若仍按着鼠标键（正在拖文件），或面板收到拖入，就取消隐藏。调小收起更快，调大更不容易打断拖拽。" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <Grid>
+                            <!-- 右侧留出开关的宽度，长文案换行时不会压到开关上 -->
+                            <StackPanel Margin="0,0,56,0">
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="Win+V 拦截" />
+                                <TextBlock Style="{StaticResource SettingHintStyle}"
+                                           Text="{Binding WinVHookStatusText, Mode=OneWay}" />
+                            </StackPanel>
+                            <ui:ToggleSwitch HorizontalAlignment="Right"
+                                             VerticalAlignment="Center"
+                                             IsChecked="{Binding WinVHookEnabled, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="暂停监听剪切板" />
+                                <TextBlock Style="{StaticResource SettingHintStyle}" Text="暂停后复制的内容不会写入历史（重新复制可手动恢复）" />
+                            </StackPanel>
+                            <ui:ToggleSwitch HorizontalAlignment="Right"
+                                             VerticalAlignment="Center"
+                                             IsChecked="{Binding MonitorPaused, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="开机自动启动" />
+                                <TextBlock Style="{StaticResource SettingHintStyle}" Text="登录 Windows 后自动在后台运行" />
+                            </StackPanel>
+                            <ui:ToggleSwitch HorizontalAlignment="Right"
+                                             VerticalAlignment="Center"
+                                             IsChecked="{Binding RunAtStartup, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <StackPanel>
+                            <Grid>
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="历史记录上限" />
+                                <TextBlock HorizontalAlignment="Right"
+                                           Style="{StaticResource SettingTitleStyle}"
+                                           Text="{Binding MaxItemsText}" />
+                            </Grid>
+                            <Slider Margin="0,6,0,0"
+                                    IsSnapToTickEnabled="True"
+                                    Maximum="1000"
+                                    Minimum="50"
+                                    TickFrequency="50"
+                                    Value="{Binding MaxItems, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource SettingHintStyle}" Text="超出上限时自动清理最旧的记录，收藏的记录始终保留" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource SettingTitleStyle}" Text="外观主题" />
+                            <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
+                                <RadioButton Content="跟随系统" GroupName="ThemeChip" Style="{StaticResource ChipStyle}"
+                                             IsChecked="{Binding ThemeMode, Converter={StaticResource EnumToBool}, ConverterParameter=System}" />
+                                <RadioButton Content="浅色" GroupName="ThemeChip" Style="{StaticResource ChipStyle}"
+                                             IsChecked="{Binding ThemeMode, Converter={StaticResource EnumToBool}, ConverterParameter=Light}" />
+                                <RadioButton Content="深色" GroupName="ThemeChip" Style="{StaticResource ChipStyle}"
+                                             IsChecked="{Binding ThemeMode, Converter={StaticResource EnumToBool}, ConverterParameter=Dark}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource SettingTitleStyle}" Text="关于" />
+                            <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingHintStyle}">
+                                <Run Text="LightClipboard v" /><Run Text="{Binding VersionText, Mode=OneWay}" />
+                                <Run Text="  ·  全局热键 " /><Run Text="{Binding HotkeyText, Mode=OneWay}" />
+                            </TextBlock>
+                            <TextBlock Style="{StaticResource SettingHintStyle}" Text="{Binding DataDirectory, Mode=OneWay}" />
+                            <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+                                <Button Content="打开数据目录" Style="{StaticResource FooterButtonStyle}" Command="{Binding OpenDataFolderCommand}" />
+                                <Button Content="清空历史" Style="{StaticResource FooterButtonStyle}" Command="{Binding ClearAllCommand}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- ============ 页脚 ============ -->
+        <Grid Grid.Row="3" Margin="14,8,14,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <!-- 两列布局 + 省略号：窗口变窄时文字自动截断，不会压到右侧按钮 -->
+            <StackPanel Grid.Column="0" Margin="0,0,10,0" VerticalAlignment="Center">
+                <TextBlock FontSize="11.5"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Text="{Binding ItemCountText}"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock FontSize="11"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Text="{Binding MonitoringHint}"
+                           TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal">
+                <Button Content="清空" Style="{StaticResource FooterButtonStyle}" Command="{Binding ClearAllCommand}" />
+                <Button Content="隐藏" Style="{StaticResource FooterButtonStyle}" Click="OnHideClick" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ============ 覆盖层：拖放提示 + 提示条 ============ -->
+        <Grid Grid.RowSpan="4" Background="Transparent" IsHitTestVisible="False">
+            <Border Margin="14"
+                    Background="{DynamicResource AccentFillColorDefaultBrush}"
+                    CornerRadius="10"
+                    Opacity="0.88"
+                    Visibility="{Binding IsDropHintVisible, Converter={StaticResource BoolToVis}}">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontFamily="{StaticResource IconFont}"
+                               FontSize="30"
+                               Foreground="{DynamicResource TextOnAccentFillColorPrimaryBrush}"
+                               Text="&#xE896;" />
+                    <TextBlock Margin="0,8,0,0"
+                               HorizontalAlignment="Center"
+                               FontSize="13"
+                               Foreground="{DynamicResource TextOnAccentFillColorPrimaryBrush}"
+                               Text="松开鼠标，把内容加入剪切板历史" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="2"
+                Margin="14,0,14,14"
+                Padding="14,9"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Bottom"
+                Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding IsToastVisible, Converter={StaticResource BoolToVis}}">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="18" Opacity="0.4" ShadowDepth="3" />
+            </Border.Effect>
+            <TextBlock FontSize="12.5"
+                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                       Text="{Binding ToastMessage}" />
+        </Border>
+    </Grid>
+</ui:FluentWindow>

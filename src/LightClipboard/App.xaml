@@ -1,0 +1,22 @@
+<Application x:Class="LightClipboard.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:conv="clr-namespace:LightClipboard.Converters"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ui:ThemesDictionary Theme="Dark" />
+                <ui:ControlsDictionary />
+                <ResourceDictionary Source="pack://application:,,,/Themes/Styles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <BooleanToVisibilityConverter x:Key="BoolToVis" />
+            <conv:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
+            <conv:NotEmptyToVisibilityConverter x:Key="NotEmptyToVis" />
+            <conv:EnumToBooleanConverter x:Key="EnumToBool" />
+            <conv:ImageThumbnailConverter x:Key="Thumb" />
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

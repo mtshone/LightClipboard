@@ -1,0 +1,224 @@
+﻿================================================================================
+           C# + WPF 剪切板增强程序（支持 Emoji、截图抓取与图片拖拽）
+                         程序架构与功能实现设计方案
+================================================================================
+
+
+一、 整体系统架构设计 (Architecture Design)
+--------------------------------------------------------------------------------
+采用 MVVM (Model-View-ViewModel) 模式构建，实现 UI 与核心逻辑的解耦。
+
+
+1. 核心模块划分：
+   - 监听服务层 (ClipboardMonitorService):
+     基于 Win32 API (AddClipboardFormatListener) 实时监听 Windows 剪切板更新。
+   - 数据解析与处理层 (ClipboardDataParser):
+     识别剪切板中的不同格式（Text/Unicode, CF_DIB, Bitmap, FileDrop等），自动提取包含 Win+Shift+S 的截屏图片。
+   - 存储与缓存层 (StorageService & ImageCacheManager):
+     - 文本直接持久化存储至 SQLite/LiteDB。
+     - 图片存储原始文件至本地磁盘（如 AppData 缓存目录），内存中仅保留轻量级 BitmapSource 缩略图，防止内存泄漏。
+   - 拖拽与交互服务 (DragDropService):
+     封装 OLE Drag & Drop 协议，支持构建包含多格式（Bitmap + FileDrop）的 DataObject 投递至外部程序（桌面、Word、微信等）。
+   - UI 界面层 (WPF / MVVM):
+     响应快捷键唤醒、卡片化展示剪切板历史、内置 Emoji/文本预览与图片展示。
+
+
+--------------------------------------------------------------------------------
+二、 核心功能具体实现方案 (Implementation Guide)
+--------------------------------------------------------------------------------
+
+
+1. Win32 剪切板全局监听 (基于 HWND 消息循环)
+   --------------------------------------------------------------------------
+   代码逻辑：
+   
+   using System;
+   using System.Runtime.InteropServices;
+   using System.Windows;
+   using System.Windows.Interop;
+
+
+   public class ClipboardMonitor
+   {
+       private const int WM_CLIPBOARDUPDATE = 0x031D;
+
+
+       [DllImport("user32.dll", SetLastError = true)]
+       private static extern bool AddClipboardFormatListener(IntPtr hwnd);
+
+
+       [DllImport("user32.dll", SetLastError = true)]
+       private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+
+
+       private HwndSource _hwndSource;
+
+
+       public event EventHandler ClipboardUpdated;
+
+
+       public void Start(Window window)
+       {
+           var helper = new WindowInteropHelper(window);
+           _hwndSource = HwndSource.FromHwnd(helper.Handle);
+           _hwndSource?.AddHook(HwndHook);
+           AddClipboardFormatListener(helper.Handle);
+       }
+
+
+       public void Stop()
+       {
+           if (_hwndSource != null)
+           {
+               RemoveClipboardFormatListener(_hwndSource.Handle);
+               _hwndSource.RemoveHook(HwndHook);
+               _hwndSource = null;
+           }
+       }
+
+
+       private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+       {
+           if (msg == WM_CLIPBOARDUPDATE)
+           {
+               ClipboardUpdated?.Invoke(this, EventArgs.Empty);
+               handled = true;
+           }
+           return IntPtr.Zero;
+       }
+   }
+
+
+
+
+2. 剪切板数据抓取（文本、Emoji与 Win+Shift+S 截屏）
+   --------------------------------------------------------------------------
+   逻辑说明：
+   - 当用户按 Win+Shift+S 截图后，Windows 会自动将位图信息写入剪切板。
+   - 在收到 WM_CLIPBOARDUPDATE 消息后，读取 Clipboard 数据。
+
+
+   示例代码：
+
+
+   public void OnClipboardUpdated()
+   {
+       // 防止由于应用内部复制操作导致循环触发
+       if (IsSelfCopying) return;
+
+
+       try
+       {
+           // 1. 处理文本及 Emoji (C# 原生 UTF-16 支持 Unicode/Emoji)
+           if (Clipboard.ContainsText())
+           {
+               string text = Clipboard.GetText();
+               SaveTextItem(text);
+           }
+           // 2. 处理截图图片 (Win+Shift+S 触发的位图写入)
+           else if (Clipboard.ContainsImage())
+           {
+               var bitmapSource = Clipboard.GetImage();
+               if (bitmapSource != null)
+               {
+                   // 将 BitmapSource 保存为本地临时文件，避免占用主内存
+                   string savedPath = SaveBitmapToDisk(bitmapSource);
+                   SaveImageItem(savedPath, bitmapSource);
+               }
+           }
+       }
+       catch (COMException ex)
+       {
+           // 剪切板可能被其他程序独占锁住，需进行捕获和重试
+           Log.Warn("剪切板访问冲突: " + ex.Message);
+       }
+   }
+
+
+
+
+3. 实现图片 Drag & Drop 输出至外部应用
+   --------------------------------------------------------------------------
+   核心原理：
+   通过构造 DataObject，同时注入文件路径 (FileDrop) 与位图流 (Bitmap)，可完美兼容外部各种第三方软件（文件管理器、Word、QQ、微信等）。
+
+
+   示例代码：
+
+
+   private void ImageCard_MouseMove(object sender, MouseEventArgs e)
+   {
+       if (e.LeftButton == MouseButtonState.Pressed)
+       {
+           var element = sender as FrameworkElement;
+           if (element?.DataContext is ImageClipboardItem item)
+           {
+               DataObject dataObject = new DataObject();
+
+
+               // 1. 提供文件路径格式 (支持桌面、文件夹、聊天软件等)
+               var fileCollection = new System.Collections.Specialized.StringCollection
+               {
+                   item.FilePath
+               };
+               dataObject.SetFileDropList(fileCollection);
+
+
+               // 2. 提供位图数据格式 (支持 Office、Photoshop 等)
+               if (item.BitmapImage != null)
+               {
+                   dataObject.SetImage(item.BitmapImage);
+               }
+
+
+               // 启动原生 OLE 拖拽操作
+               DragDrop.DoDragDrop(element, dataObject, DragDropEffects.Copy);
+           }
+       }
+   }
+
+
+
+
+--------------------------------------------------------------------------------
+三、 关键坑点与注意事项 (Key Considerations & Edge Cases)
+--------------------------------------------------------------------------------
+
+
+1. 剪切板竞争与锁死问题 (CLIPBRD_E_CANT_OPEN)
+   - 原因：剪切板是系统全局共享资源。当其他软件（如 Word、浏览器）正在写入剪切板时，调用 Clipboard.GetText() 会抛出 COMException。
+   - 解决方案：对剪切板读取增加重试机制（指数退避，如重试 3 次，每次间隔 50ms）。
+
+
+2. 死循环触发 (Circular Trigger)
+   - 原因：当用户在你的应用中双击或点击某条历史记录“重新复制到剪切板”时，同样会触发 WM_CLIPBOARDUPDATE 监听。
+   - 解决方案：在应用内部往剪切板写数据时，设置标志位 `IsSelfCopying = true`，写入完成后延迟重置为 `false`，从而在监听回调中屏蔽自身写入。
+
+
+3. 内存管理与图片缓存 (Memory Leak Avoidance)
+   - 原因：BitmapSource / BitmapImage 在 WPF 中极易产生内存泄漏，特别是频繁截图时内存暴涨。
+   - 解决方案：
+     a. 截屏图片第一时间异步保存到磁盘 PNG 文件。
+     b. 加载到 UI 列表的图片使用 DecodePixelWidth 限制尺寸，只读取缩略图。
+     c. BitmapImage 初始化时设置 `BitmapCacheOption.OnLoad` 并立即关闭 Stream。
+
+
+4. 线程模型 (STA Threading)
+   - 原因：Windows 剪切板和 DragDrop 操作强依赖 STA (Single-Threaded Apartment) 线程模型。
+   - 解决方案：所有访问 Clipboard 和调用 DragDrop.DoDragDrop 的代码必须运行在 UI 线程（或标记了 [STAThread] 的专用线程）。
+
+
+--------------------------------------------------------------------------------
+四、 推荐依赖库与技术选型 (Recommended Tech Stack)
+--------------------------------------------------------------------------------
+1. UI 控件库：
+   - WPF-UI / HandyControl / MaterialDesignInXaml（构建现代 Fluent 风格卡片界面）
+2. MVVM 框架：
+   - CommunityToolkit.Mvvm（微软官方轻量高效 MVVM 工具包）
+3. 数据库存储：
+   - LiteDB（轻量级单文件 NoSQL，极其适合存剪切板卡片数据）或 SQLite
+4. 图片处理：
+   - SkiaSharp / ImageSharp（生成低内存高清晰缩略图）
+
+
+================================================================================
