@@ -20,6 +20,9 @@ public sealed class ClipboardItemViewModel : ObservableObject
 
     private ClipboardItem _model;
 
+    /// <summary>多选态（由 ClipboardSelection 维护，见 <see cref="SetMultiSelected"/>）。</summary>
+    private bool _isMultiSelected;
+
     public ClipboardItemViewModel(ClipboardItem model)
     {
         _model = model;
@@ -180,6 +183,28 @@ public sealed class ClipboardItemViewModel : ObservableObject
     public string PinGlyph => _model.IsPinned ? "\uE77A" : "\uE718";
 
     public string PinTooltip => _model.IsPinned ? "取消收藏" : "收藏（不会被自动清理）";
+
+    /// <summary>
+    /// 是否在多选集合里（仅图片会为 true）。与 ListBox 自身的 IsSelected（"当前项"）是两件事：
+    /// 前者表示"会被一起拖出去的批次"，后者只是键盘光标所在的那张卡。
+    /// </summary>
+    public bool IsMultiSelected => _isMultiSelected;
+
+    /// <summary>
+    /// 由 <see cref="LightClipboard.Selection.ClipboardSelection"/> 维护。
+    /// **刻意不公开 setter**：选择状态的唯一写入方必须是选择状态机，
+    /// 否则会出现"XAML 绑定也能改选择"的两套真相。
+    /// </summary>
+    public void SetMultiSelected(bool value)
+    {
+        if (_isMultiSelected == value)
+        {
+            return;
+        }
+
+        _isMultiSelected = value;
+        OnPropertyChanged(nameof(IsMultiSelected));
+    }
 
     /// <summary>搜索匹配。</summary>
     public bool Matches(string keyword)

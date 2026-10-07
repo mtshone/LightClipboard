@@ -177,7 +177,19 @@
                             BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1"
                             CornerRadius="8">
-                        <ContentPresenter />
+                        <Grid>
+                            <!-- 多选态的强调色底纹：单独一层，只改这一层的 Opacity，
+                                 不动卡片内容的前景色。
+                                 为什么不用 AccentFillColorSelectedTextBackgroundBrush 直接当背景：
+                                 那是饱和强调色，主文本压在上面读不清（暗/亮主题都危险）；
+                                 16% 透明度的强调色叠在卡片底色上，两套主题下都安全。 -->
+                            <Border x:Name="MultiSelectTint"
+                                    Background="{DynamicResource AccentFillColorDefaultBrush}"
+                                    CornerRadius="7"
+                                    IsHitTestVisible="False"
+                                    Opacity="0" />
+                            <ContentPresenter />
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -186,6 +198,14 @@
                         <Trigger Property="IsSelected" Value="True">
                             <Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource AccentFillColorDefaultBrush}" />
                         </Trigger>
+                        <!-- 多选态：必须与"当前项"（IsSelected，1px 强调色边框）区分开
+                             —— 用强调色底纹 + 更粗的 2px 边框。
+                             本触发器写在 IsSelected 之后，两者同时命中时以多选视觉为准。 -->
+                        <DataTrigger Binding="{Binding IsMultiSelected}" Value="True">
+                            <Setter TargetName="MultiSelectTint" Property="Opacity" Value="0.16" />
+                            <Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                            <Setter TargetName="Card" Property="BorderThickness" Value="2" />
+                        </DataTrigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
@@ -247,6 +267,14 @@
         <Setter Property="Margin" Value="0,2,0,0" />
         <Setter Property="TextWrapping" Value="Wrap" />
         <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}" />
+    </Style>
+
+    <!-- 「标题 + 说明」那一列：右侧要给同一行里右对齐的 ToggleSwitch 让位。
+         行内两者同处一个 Grid 单元格（一个左对齐、一个右对齐），文字块不会自动避开开关 ——
+         让位靠的就是这个 Margin，删掉后长说明文字会折到开关底下被盖住半行（坑点 18）。
+         56 = 开关实测宽 40（@470 窗口宽）+ 16 间隔，与「Win+V 拦截」行原先手写的值一致。 -->
+    <Style x:Key="SettingRowLabelStyle" TargetType="StackPanel">
+        <Setter Property="Margin" Value="0,0,56,0" />
     </Style>
 
     <!-- 设置页里的“手动输入数值”小输入框（例如隐藏延迟 50~1000 ms）。

@@ -42,7 +42,11 @@ public sealed class ClipboardItem
     /// <summary>首次进入历史的时间。</summary>
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 
-    /// <summary>最近一次被复制/使用的时间，用于排序。</summary>
+    /// <summary>
+    /// 排序键（列表按它倒序）：最近一次**进入**剪切板的时间 —— 入库或去重命中时刷新。
+    /// 面板输出（点击卡片复制 / 粘贴 / 拖出）不改写它，所以列表顺序是稳定的历史顺序。
+    /// 字段名保持不变：LiteDB 按属性名映射，改名会让旧记录静默丢掉这个字段。
+    /// </summary>
     public DateTime LastUsedAt { get; set; } = DateTime.Now;
 
     /// <summary>是否已收藏（收藏项不会被自动清理，并始终排在最前）。</summary>

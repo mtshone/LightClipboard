@@ -4,6 +4,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Script,
     # 默认存到本仓库的 tools\shots（按脚本位置推导，仓库搬到哪台机器都能用）
+    # ⚠️ 只放行了 4 个已知文件名（v12-*.png，见 .gitignore）：**别对着没有隔离数据目录的实例截图**，
+    #    否则真实剪切板内容会被带进仓库。要给真实实例截图，先设 LIGHTCLIPBOARD_HOME 指向 %TEMP% 下的隔离目录。
     [string]$OutDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\shots'),
     [string]$ProcessName = 'LightClipboard'
 )

@@ -15,12 +15,30 @@ public static class PasteService
 {
     private static readonly DispatcherTimer FocusTimer = new() { Interval = TimeSpan.FromMilliseconds(90) };
 
+    /// <summary>粘贴按键发出后要执行的一次性回调（用于"借完就还"的剪切板还原）。</summary>
+    private static Action? _afterPasteSent;
+
     static PasteService()
     {
         FocusTimer.Tick += (_, _) =>
         {
             FocusTimer.Stop();
-            SendPasteKeystroke();
+
+            bool sent = SendPasteKeystroke();
+
+            var callback = _afterPasteSent;
+            _afterPasteSent = null;
+
+            // 只有按键真的发出去了才算"粘贴已送达"：发送失败时不还原，
+            // 让内容留在剪切板里，用户还能自己按 Ctrl+V 补救。
+            if (sent)
+            {
+                callback?.Invoke();
+            }
+            else if (callback != null)
+            {
+                Log.Warn("Ctrl+V 未发出，跳过粘贴后的剪切板还原");
+            }
         };
     }
 
@@ -228,13 +246,20 @@ public static class PasteService
     /// <summary>
     /// 完整流程：激活目标窗口 → 延时 → 模拟 Ctrl+V。调用方应已隐藏自身窗口。
     /// </summary>
-    public static void PasteIntoWindow(IntPtr target)
+    /// <param name="target">目标窗口句柄。</param>
+    /// <param name="afterPasteSent">
+    /// 按键**成功发出**后执行一次的回调（可为 null）。用于"输出只借一次剪切板"：把内容送进目标程序后
+    /// 再把剪切板还原成输出前的内容（见 <see cref="ClipboardWriter.ScheduleRestoreAfterPaste"/>）。
+    /// </param>
+    public static void PasteIntoWindow(IntPtr target, Action? afterPasteSent = null)
     {
         if (target == IntPtr.Zero || !NativeMethods.IsWindow(target))
         {
             Log.Warn($"自动粘贴被跳过：目标窗口无效 (0x{target.ToInt64():X})");
             return;
         }
+
+        _afterPasteSent = afterPasteSent;
 
         bool activated = ActivateWindow(target);
         if (!activated)

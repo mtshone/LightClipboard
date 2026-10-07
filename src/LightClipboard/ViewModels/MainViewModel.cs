@@ -141,9 +141,36 @@ public sealed partial class MainViewModel : ObservableObject
 
     public bool HasItems => Items.Count > 0;
 
-    public string EmptyHint => string.IsNullOrWhiteSpace(SearchText)
-        ? "还没有历史记录。\n复制任意文本、Emoji 或图片（Win+Shift+S 截图）即可自动收录。"
-        : "没有匹配的记录，换个关键词试试。";
+    /// <summary>
+    /// 空状态文案。收藏项已从「全部 / 文本 / 图片 / 文件」移出（见 <see cref="PassesFilter"/>），
+    /// 因此多出两种必须说清楚的状态：⭐ 里还没有收藏、以及记录被收藏光了导致其它视图为空。
+    /// </summary>
+    public string EmptyHint
+    {
+        get
+        {
+            bool searching = !string.IsNullOrWhiteSpace(SearchText);
+
+            if (Filter == HistoryFilter.Pinned)
+            {
+                return searching
+                    ? "收藏里没有匹配的记录，换个关键词试试。"
+                    : "还没有收藏的记录。\n把鼠标移到卡片上，点 📌 即可收藏（右键菜单同样可以）。";
+            }
+
+            if (searching)
+            {
+                return "没有匹配的记录，换个关键词试试。";
+            }
+
+            if (_all.Count > 0 && _all.All(x => x.IsPinned))
+            {
+                return "记录都在收藏里，切到 ⭐ 查看。";
+            }
+
+            return "还没有历史记录。\n复制任意文本、Emoji 或图片（Win+Shift+S 截图）即可自动收录。";
+        }
+    }
 
     // ------------------------------------------------------------------
     // 设置项（双向绑定）
@@ -175,9 +202,38 @@ public sealed partial class MainViewModel : ObservableObject
             }
 
             _settingsService.Update(s => s.HideOnDeactivate = value);
+
+            // 记一行：排查"开关到底有没有生效"时，日志比界面可靠（界面上的开关只能证明视觉状态）
+            Log.Info($"[设置] 失焦即隐藏 = {(value ? "开启" : "关闭")}");
+            OnPropertyChanged();
+
+            // 「始终置顶」从属于本开关：上面一开，面板失焦就收起，置顶没有意义（设置页据此置灰）
+            OnPropertyChanged(nameof(KeepOnTopEnabled));
+        }
+    }
+
+    /// <summary>
+    /// 「始终置顶」：被**同样置顶**的窗口（全屏浏览器 / 播放器 / 其它置顶工具）压住时，
+    /// 失焦后把面板无焦点地抬回最上层。面板本身已是 Topmost，普通窗口压不住它。
+    /// </summary>
+    public bool KeepOnTopWhenUnfocused
+    {
+        get => Settings.KeepOnTopWhenUnfocused;
+        set
+        {
+            if (Settings.KeepOnTopWhenUnfocused == value)
+            {
+                return;
+            }
+
+            _settingsService.Update(s => s.KeepOnTopWhenUnfocused = value);
+            Log.Info($"[设置] 始终置顶 = {(value ? "开启" : "关闭")}");
             OnPropertyChanged();
         }
     }
+
+    /// <summary>设置页的可用性：只有关掉「失焦即隐藏」（面板要常驻）时「始终置顶」才起作用。</summary>
+    public bool KeepOnTopEnabled => !Settings.HideOnDeactivate;
 
     /// <summary>
     /// 失焦后的隐藏缓冲时长（毫秒）。窗口侧订阅 SettingsService.Changed 实时套用新的计时器间隔，
@@ -374,14 +430,19 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// 页脚计数。收藏项已从「全部 / 文本 / 图片 / 文件」移出（见 <see cref="PassesFilter"/>），
+    /// 因此"共 N 条"只统计未收藏的记录，才能和「全部」列表里实际看到的条数对上。
+    /// </summary>
     public string ItemCountText
     {
         get
         {
             int pinned = _all.Count(x => x.IsPinned);
+            int history = _all.Count - pinned;
             return pinned > 0
-                ? $"共 {_all.Count} 条 · 收藏 {pinned} 条"
-                : $"共 {_all.Count} 条";
+                ? $"共 {history} 条 · 收藏 {pinned} 条"
+                : $"共 {history} 条";
         }
     }
 
@@ -421,15 +482,21 @@ public sealed partial class MainViewModel : ObservableObject
         RefreshCommand.NotifyCanExecuteChanged();
     }
 
+    /// <summary>
+    /// 判断一条记录是否属于当前筛选。
+    /// **收藏项是独立分区：只在 ⭐ 里出现，不再混进「全部 / 文本 / 图片 / 文件」**
+    /// —— 否则收藏一多就会把新剪切的内容挤出视野。搜索同样遵守这条规则
+    /// （若搜索时放行收藏项，就会出现"同一个列表里有/没有收藏项"两套心智模型）。
+    /// </summary>
     private bool PassesFilter(ClipboardItemViewModel vm)
     {
         bool filterOk = Filter switch
         {
-            HistoryFilter.Text => vm.IsText,
-            HistoryFilter.Image => vm.IsImage,
-            HistoryFilter.Files => vm.IsFiles,
             HistoryFilter.Pinned => vm.IsPinned,
-            _ => true,
+            HistoryFilter.Text => !vm.IsPinned && vm.IsText,
+            HistoryFilter.Image => !vm.IsPinned && vm.IsImage,
+            HistoryFilter.Files => !vm.IsPinned && vm.IsFiles,
+            _ => !vm.IsPinned,
         };
 
         return filterOk && vm.Matches(SearchText.Trim());
@@ -444,9 +511,10 @@ public sealed partial class MainViewModel : ObservableObject
     partial void OnHotkeyTextChanged(string value) => OnPropertyChanged(nameof(MonitoringHint));
 
     /// <summary>
-    /// 顶部筛选胶囊（全部 / 文本 / 图片 / 文件 / ★）变化。
+    /// 顶部筛选胶囊（全部 / 文本 / 图片 / 文件 / ⭐）变化。
     /// 它同时承担“回到历史页”的语义：在 Emoji / 设置页点任意筛选都会切回历史列表，
-    /// 因此“全部”就是完整历史列表，不再需要单独的“历史”按钮。
+    /// 因此“全部”就是完整的未收藏历史（收藏项单独归 ⭐，见 <see cref="PassesFilter"/>），
+    /// 不再需要单独的“历史”按钮。
     /// </summary>
     partial void OnFilterChanged(HistoryFilter value)
     {
@@ -667,6 +735,14 @@ public sealed partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(ItemCountText));
     }
 
+    /// <summary>
+    /// 主列表排序：收藏优先 + 最近入库优先。
+    /// 面板"输出"不改写 LastUsedAt（见 <see cref="CopyToClipboard"/>），
+    /// 所以这里的顺序就是稳定的历史顺序，不会因为"用过一次"而变动。
+    /// 收藏项自成一体后，各视图内部其实都只按 LastUsedAt 排，「收藏优先」这一层不再影响任何
+    /// 视图的显示顺序；保留它是为了让 _all 的内部顺序与"收藏优先"的语义一致，
+    /// 将来若再出现收藏与非收藏混排的视图（见 <see cref="PassesFilter"/>）不必回头补。
+    /// </summary>
     private void SortList()
     {
         _all.Sort(static (a, b) =>
@@ -747,6 +823,7 @@ public sealed partial class MainViewModel : ObservableObject
         Log.Info($"历史超限，已清理 {removed.Count} 条记录");
         OnPropertyChanged(nameof(ItemCountText));
         OnPropertyChanged(nameof(HasItems));
+        OnPropertyChanged(nameof(EmptyHint));   // 空状态文案依赖 _all 的构成（收藏分区），别漏刷新
     }
 
     // ------------------------------------------------------------------
@@ -794,29 +871,33 @@ public sealed partial class MainViewModel : ObservableObject
     {
         try
         {
+            // "会在目标程序里粘贴"的输出才借得还：先把输出前的剪切板整份存下来，
+            // 粘贴送达后由 ClipboardWriter 还原 —— 用户随后按 Ctrl+V 得到的仍是输出前那份内容
+            // （正常情形就是列表顶部那条），而不是刚被输出的这条。
+            // "只复制"（requestPaste = false）不存快照：那一档的语义就是把这条留在剪切板里等用户 Ctrl+V。
+            if (requestPaste)
+            {
+                _writer.CaptureForRestore();
+            }
+
             bool ok = _writer.SetItem(vm.Model, Settings.CopyImageWithFilePath);
             if (!ok)
             {
+                _writer.DiscardRestore();
                 ShowToast("复制失败：剪切板被其他程序占用");
                 return;
             }
 
-            _storage.Touch(vm.Id);
-            var touched = _storage.GetById(vm.Id);
-            if (touched != null)
-            {
-                vm.Update(touched);
-                _all.Remove(vm);
-                _all.Add(vm);
-                SortList();
-                SyncVisible(vm);
-                SelectedItem = vm;
-            }
-
+            // 输出（单击复制 / 粘贴、右键菜单复制）**不改写排序键、不重排列表**：
+            // 卡片留在它在历史里的原位置，顺序不会因为"用过一次"而跳动。
+            // 排序键 LastUsedAt 只由"入库"（含去重命中）与收藏操作写入，见 StorageService.AddOrTouch；
+            // 以前这里会 Touch + 把自己移到列表顶部，用过的旧条目会突然跳到最上面。
+            SelectedItem = vm;
             PasteRequested?.Invoke(this, new PasteRequestEventArgs(vm.Model, requestPaste, vm.TypeName));
         }
         catch (Exception ex)
         {
+            _writer.DiscardRestore();
             Log.Error("复制历史条目失败", ex);
             ShowToast("复制失败：" + ex.Message);
         }
@@ -840,7 +921,12 @@ public sealed partial class MainViewModel : ObservableObject
         vm.Update(updated);
         SortList();
         RebuildView();
-        ShowToast(vm.IsPinned ? "已收藏，不会被自动清理" : "已取消收藏");
+
+        // 收藏后卡片会立刻从当前视图消失（收藏只在 ⭐ 里显示），
+        // Toast 必须说清它去哪了，否则看起来像"点一下就被删了"。
+        ShowToast(vm.IsPinned
+            ? "已收藏，移入 ⭐（不会被自动清理）"
+            : "已取消收藏，已放回历史列表");
     }
 
     [RelayCommand]
@@ -867,6 +953,7 @@ public sealed partial class MainViewModel : ObservableObject
         Items.Remove(vm);
         OnPropertyChanged(nameof(HasItems));
         OnPropertyChanged(nameof(ItemCountText));
+        OnPropertyChanged(nameof(EmptyHint));   // 空状态文案依赖 _all 的构成（收藏分区），别漏刷新
         ShowToast("已删除该记录");
     }
 
@@ -1060,10 +1147,10 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 顶部的“全部 / 文本 / 图片 / 文件 / ★”胶囊。
+    /// 顶部的“全部 / 文本 / 图片 / 文件 / ⭐”胶囊。
     /// 它同时承担“回到历史页”的语义：从 Emoji / 设置页点任意筛选都会切回历史列表，
-    /// 这样顶部就不会出现“点了胶囊但界面没反应”的情况（“全部”即完整历史列表，
-    /// 不再需要单独的“历史”按钮）。
+    /// 这样顶部就不会出现“点了胶囊但界面没反应”的情况（“全部”即全部未收藏记录，
+    /// 收藏项只在 ⭐ 里，不再需要单独的“历史”按钮）。
     /// </summary>
     [RelayCommand]
     private void SetFilter(string? filter)
@@ -1099,8 +1186,16 @@ public sealed partial class MainViewModel : ObservableObject
     {
         try
         {
+            // 与点卡片同理：会粘贴出去的 Emoji 也是"借一次剪切板"，粘贴送达后还原；
+            // 只复制（AutoPaste 关闭）时把 Emoji 留在剪切板里，等用户自己 Ctrl+V。
+            if (AutoPaste)
+            {
+                _writer.CaptureForRestore();
+            }
+
             if (!_writer.SetText(entry.Value))
             {
+                _writer.DiscardRestore();
                 ShowToast("复制失败：剪切板被占用");
                 return;
             }
@@ -1113,6 +1208,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            _writer.DiscardRestore();
             Log.Warn("复制 Emoji 失败", ex);
         }
     }
@@ -1129,14 +1225,30 @@ public sealed partial class MainViewModel : ObservableObject
         _toastTimer.Start();
     }
 
-    /// <summary>面板显示时刷新（脏数据重载 + 状态文案）。</summary>
+    /// <summary>
+    /// 面板显示时刷新（脏数据重载 + 状态文案）。
+    /// 顺带清空搜索框：面板是临时弹窗，上次留下的关键词会静默过滤列表；
+    /// 而呼出后光标又不在搜索框里（v1.2.2），残留的过滤条件更容易让人以为"记录丢了"。
+    /// 赋值会触发 <see cref="OnSearchTextChanged"/>，可见列表与 Emoji 搜索一起复位。
+    /// </summary>
     public void OnPanelShown()
     {
+        if (!string.IsNullOrEmpty(SearchText))
+        {
+            SearchText = string.Empty;
+        }
+
         StatusText = MonitoringStateText;
         OnPropertyChanged(nameof(RunAtStartup));
         OnPropertyChanged(nameof(ItemCountText));
         OnPropertyChanged(nameof(DeferredHideDelayMs));
         OnPropertyChanged(nameof(DeferredHideDelayInput));
+
+        // 每次呼出都把「失焦即隐藏」的开关状态重新读一遍：开关显示的是内存里的值，
+        // 一旦它和实际生效值不一致，用户就会得出"开关没用"的结论（排查这种问题极费时间）
+        OnPropertyChanged(nameof(HideOnDeactivate));
+        OnPropertyChanged(nameof(KeepOnTopWhenUnfocused));
+        OnPropertyChanged(nameof(KeepOnTopEnabled));
         RefreshWinVHookState();
     }
 

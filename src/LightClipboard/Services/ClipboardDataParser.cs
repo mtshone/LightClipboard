@@ -31,7 +31,7 @@ public sealed class ParsedClipboardContent
 
 /// <summary>
 /// 剪切板数据解析：识别 Text/UnicodeText、Bitmap/DIB/PNG、FileDrop 等格式，
-/// 并针对 CLIPBRD_E_CANT_OPEN（剪切板被其他程序独占）做指数退避重试。
+/// 并针对 CLIPBRD_E_CANT_OPEN（剪切板被其他程序独占）做退避重试（50/100/150ms 等差递增）。
 /// </summary>
 public sealed class ClipboardDataParser
 {

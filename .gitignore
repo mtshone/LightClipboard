@@ -20,9 +20,38 @@ Exports/
 selftest.txt
 settings.json
 
+# 兜底：任何日志 / 数据库文件都不入库。
+# 上面按固定名字挡的是主防线；这条防"换了名字或换了路径"的漏网
+# （例如自定义库名、崩溃转储日志），免得哪天顺手 git add -A 就把运行期数据提交上去。
+*.log
+*.db
+*.sqlite
+
+# v1.3.0 隐私加固（复核时用真实 `git add --dry-run` 实证过漏网）：
+# `*.db` 匹配不到 SQLite 的 WAL/SHM 边车文件（名字是 xxx.db-wal 而不是 xxx.wal），
+# `clipboard.db-*` 又只锚定默认库名 —— 换库名/换路径时 .db-wal / .db-shm 会被跟踪。
+*.db-wal
+*.db-shm
+# 崩溃转储，以及"发布包/归档留在了仓库内"（发布 zip 约 3 MB 二进制，被 git add -A 就会入库）
+*.dmp
+*.zip
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/
 *.swp
 Thumbs.db
 desktop.ini
+
+# ---- 界面截图：只放行仓库里已有的那几张演示图 ----
+# tools/shoot-pages.ps1 与 tools/ui-flow.ps1 默认把截图写到 tools/shots/。
+# 如果对着**没有隔离数据目录**的实例跑，真实剪切板内容会被截图带进仓库 ——
+# 所以这里只放行下面这些已知名字（它们是已跟踪文件，重拍同名图不受影响）；
+# 想提交新名字的截图，先在下面显式放行（或 git add -f）。
+tools/shots/*.png
+!tools/shots/v12-emoji.png
+!tools/shots/v12-history.png
+!tools/shots/v12-narrow.png
+!tools/shots/v12-settings.png
+# v1.3.0 加拍：多选态留档图（在隔离数据目录 + --demo 下截的，只有演示数据）
+!tools/shots/v13-multiselect.png

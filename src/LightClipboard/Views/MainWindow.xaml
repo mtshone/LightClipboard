@@ -66,8 +66,9 @@
             </ui:TextBox>
 
             <!-- 顶部胶囊：一条主链，顺序固定为
-                 全部 → 文本 → 图片 → 文件 → Emoji → ★ → 设置
-                 前四项是历史筛选，后三项是页面切换；同一 GroupName 保证任何时候只有一个是选中态。
+                 全部 → 文本 → 图片 → 文件 → 😀 Emoji → ⭐ → 设置
+                 前四项是历史筛选（全部 = 全部未收藏记录，收藏项只在 ⭐ 里），后三项是页面切换；
+                 同一 GroupName 保证任何时候只有一个是选中态。
                  只用 IsChecked 双向绑定驱动（**不要挂 Command**：RadioButton 的点击只改本地 IsChecked，
                  不像 Button 那样触发 Command，见 04-实现细节与坑点.md 坑点 9）。
                  页面/筛选的落地统一走 Checked 事件（OnMainChipChecked）：
@@ -365,6 +366,23 @@
                         </Grid>
                     </Border>
 
+                    <!-- 「始终置顶」从属于「失焦即隐藏」：面板要常驻时才有必要跟别的置顶窗口抢层级 -->
+                    <Border Style="{StaticResource SettingRowStyle}">
+                        <Grid>
+                            <!-- 说明很长（三行），必须用 SettingRowLabelStyle 给右侧开关让位，
+                                 否则第一行会钻到开关底下被盖住半行 -->
+                            <StackPanel Style="{StaticResource SettingRowLabelStyle}">
+                                <TextBlock Style="{StaticResource SettingTitleStyle}" Text="始终置顶" />
+                                <TextBlock Style="{StaticResource SettingHintStyle}"
+                                           Text="被同样置顶的窗口（全屏浏览器、播放器、其它置顶工具）压住时，失焦后自动抬回最上层、且不抢键盘焦点。需先关闭上面的「失去焦点时自动隐藏」—— 否则面板失焦就收起了，谈不上被挡住。" />
+                            </StackPanel>
+                            <ui:ToggleSwitch HorizontalAlignment="Right"
+                                             VerticalAlignment="Center"
+                                             IsEnabled="{Binding KeepOnTopEnabled}"
+                                             IsChecked="{Binding KeepOnTopWhenUnfocused, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+
                     <!-- 隐藏延迟：直接控制“失焦→隐藏”的缓冲时长（拖拽文件进来时靠它让路） -->
                     <Border Style="{StaticResource SettingRowStyle}">
                         <StackPanel>
@@ -390,8 +408,8 @@
 
                     <Border Style="{StaticResource SettingRowStyle}">
                         <Grid>
-                            <!-- 右侧留出开关的宽度，长文案换行时不会压到开关上 -->
-                            <StackPanel Margin="0,0,56,0">
+                            <!-- 右侧留出开关的宽度（SettingRowLabelStyle），长文案换行时不会压到开关上 -->
+                            <StackPanel Style="{StaticResource SettingRowLabelStyle}">
                                 <TextBlock Style="{StaticResource SettingTitleStyle}" Text="Win+V 拦截" />
                                 <TextBlock Style="{StaticResource SettingHintStyle}"
                                            Text="{Binding WinVHookStatusText, Mode=OneWay}" />
@@ -493,6 +511,14 @@
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            Text="{Binding MonitoringHint}"
                            TextTrimming="CharacterEllipsis" />
+                <!-- 多选提示："已选 N 张图片 · 拖动其中任意一张可全部拖出"。
+                     内容与显隐都由代码后置（UpdateSelectionHint）维护：无选择时整行 Collapsed，
+                     不留空行高度；MainWindow 不是 ObservableObject，不为此引入新的绑定层。 -->
+                <TextBlock x:Name="SelectionHint"
+                           FontSize="11"
+                           Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
+                           TextTrimming="CharacterEllipsis"
+                           Visibility="Collapsed" />
             </StackPanel>
             <StackPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal">
                 <Button Content="清空" Style="{StaticResource FooterButtonStyle}" Command="{Binding ClearAllCommand}" />

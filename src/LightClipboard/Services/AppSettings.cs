@@ -30,8 +30,17 @@ public sealed class AppSettings
     /// <summary>点击卡片后是否自动粘贴到之前的焦点窗口。</summary>
     public bool AutoPaste { get; set; } = true;
 
-    /// <summary>面板失去焦点时自动隐藏。</summary>
+    /// <summary>
+    /// 面板失去焦点时自动隐藏。
+    /// </summary>
     public bool HideOnDeactivate { get; set; } = true;
+
+    /// <summary>
+    /// 「始终置顶」：面板失焦后把自己**无焦点**地抬回置顶层最上方，防止被**同样置顶**的窗口
+    /// （全屏浏览器、播放器、其它置顶工具）压住 —— 面板本身已是 Topmost，普通窗口压不住它。
+    /// 只在 <see cref="HideOnDeactivate"/> 关闭（面板要常驻）时有意义，设置页里这一项也从属于它。
+    /// </summary>
+    public bool KeepOnTopWhenUnfocused { get; set; }
 
     /// <summary>
     /// 失焦后的隐藏缓冲时长（毫秒）。失焦时若鼠标键仍按着（很可能正在从别的窗口往面板里拖东西），

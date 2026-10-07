@@ -33,7 +33,11 @@ public sealed class StorageService : IDisposable
         _items.EnsureIndex(x => x.IsPinned);
     }
 
-    /// <summary>按“收藏优先 + 最近使用时间倒序”返回全部条目。</summary>
+    /// <summary>
+    /// 按“收藏优先 + 最近入库时间倒序”返回全部条目。
+    /// LastUsedAt 只在入库（含去重命中）与收藏操作时刷新，面板输出不改写它，
+    /// 因此这个顺序对用户来说是稳定的历史顺序（见 MainViewModel.CopyToClipboard）。
+    /// </summary>
     public List<ClipboardItem> GetAll()
     {
         lock (_gate)
@@ -72,7 +76,9 @@ public sealed class StorageService : IDisposable
     }
 
     /// <summary>
-    /// 写入一条新记录；若内容指纹已存在，则更新其时间戳并置顶（去重）。
+    /// 写入一条新记录；若内容指纹已存在，则刷新时间戳 —— 等价于把它排到列表最前（去重）。
+    /// 注意：这是**唯一**会因"内容再次进入剪切板"而改变排序位置的入口。
+    /// 面板输出（点击卡片复制 / 粘贴）走 MainViewModel.CopyToClipboard，不碰时间戳。
     /// </summary>
     /// <returns>最终落库的实体，以及是否为新增。</returns>
     public (ClipboardItem Item, bool IsNew) AddOrTouch(ClipboardItem incoming)
@@ -113,21 +119,10 @@ public sealed class StorageService : IDisposable
             }
 
             item.IsPinned = pinned;
-            item.LastUsedAt = DateTime.Now;
-            _items.Update(item);
-        }
-    }
 
-    public void Touch(int id)
-    {
-        lock (_gate)
-        {
-            var item = _items.FindById(id);
-            if (item == null)
-            {
-                return;
-            }
-
+            // 收藏是用户显式的"管理"动作，不是输出，因此仍然刷新时间戳：
+            // 取消收藏后该条回到历史列表最上方，方便接着操作。
+            // 若将来要求"收藏 / 取消收藏也不许动顺序"，删掉这一行即可（别只改界面侧）。
             item.LastUsedAt = DateTime.Now;
             _items.Update(item);
         }

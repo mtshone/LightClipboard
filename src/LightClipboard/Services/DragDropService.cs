@@ -127,6 +127,73 @@ public sealed class DragDropService
         }
     }
 
+    /// <summary>
+    /// 为**多张图片**构造拖拽数据：只用 FileDrop（N 个已导出的 PNG 路径）。
+    ///
+    /// 为什么不再附加 Bitmap / PNG 流：多张时"哪一张作为位图"没有合理答案，
+    /// 而资源管理器 / 聊天软件 / 邮件客户端本来就按文件列表逐个接收。
+    /// 单张拖拽继续走原来的 <see cref="BuildDataObject"/>（含 Bitmap + PNG），行为完全不变。
+    ///
+    /// 性能提示：<see cref="ImageCacheManager.EnsureExportFile"/> 首次调用会对每张图做一次
+    /// File.Copy（之后同名复用），且全程在 UI 线程。选 30 张大图时，拖拽启动前会有一次性的
+    /// 数百毫秒到 1–2 秒开销；本版接受（见实施方案 §3.5）。
+    /// </summary>
+    /// <returns>可拖拽的数据对象；一张都导不出时返回 null。</returns>
+    public DataObject? BuildDataObjectForImages(IReadOnlyList<ClipboardItem> items)
+    {
+        var paths = new StringCollection();
+
+        foreach (var item in items)
+        {
+            // 防御：调用方应已过滤，这里再挡一次，避免把非图片混进队列
+            if (item.Type != ClipboardItemType.Image)
+            {
+                continue;
+            }
+
+            string? exportPath = _images.EnsureExportFile(item.ImagePath);
+            if (!string.IsNullOrEmpty(exportPath))
+            {
+                paths.Add(exportPath);
+            }
+        }
+
+        if (paths.Count == 0)
+        {
+            // 返回 null → DoDragDrop 返回 None → 面板保留（与"拖了一下没成"一致）
+            Log.Warn("多选拖拽被跳过：没有可导出的图片文件");
+            return null;
+        }
+
+        var data = new DataObject();
+        data.SetFileDropList(paths);
+        Log.Info($"已构造多图拖拽数据：{paths.Count} 个文件");
+        return data;
+    }
+
+    /// <summary>
+    /// 启动一次"多张图片"的原生 OLE 拖拽。必须在 UI 线程调用。
+    /// </summary>
+    /// <returns>拖拽最终效果；无可用图片时为 <see cref="DragDropEffects.None"/>。</returns>
+    public DragDropEffects DoDragDrop(DependencyObject source, IReadOnlyList<ClipboardItem> items)
+    {
+        var data = BuildDataObjectForImages(items);
+        if (data == null)
+        {
+            return DragDropEffects.None;
+        }
+
+        try
+        {
+            return DragDrop.DoDragDrop(source, data, DragDropEffects.Copy);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("多图拖拽操作失败", ex);
+            return DragDropEffects.None;
+        }
+    }
+
     /// <summary>解析从外部拖入的数据（返回零个或多个待入库条目）。</summary>
     public void ParseDroppedData(IDataObject data, Action<ParsedClipboardContent> onContent)
     {
